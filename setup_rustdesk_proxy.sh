@@ -153,12 +153,15 @@ if [ -n "$STREAM_MODULE" ]; then
     # 备份 nginx.conf
     cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.backup.$(date +%Y%m%d_%H%M%S)
     
-    # 检查是否已加载模块
-    if ! grep -q "load_module.*stream" /etc/nginx/nginx.conf; then
+    # 检查模块是否已通过 modules-enabled 加载
+    if [ -f /etc/nginx/modules-enabled/50-mod-stream.conf ]; then
+        print_info "Stream 模块已通过 modules-enabled 加载"
+    elif grep -q "load_module.*stream" /etc/nginx/nginx.conf; then
+        print_info "Stream 模块已在 nginx.conf 中加载"
+    else
+        # 只有在没有加载的情况下才添加
         sed -i "1i load_module $STREAM_MODULE;" /etc/nginx/nginx.conf
         print_success "Stream 模块已加载"
-    else
-        print_info "Stream 模块已存在"
     fi
 else
     print_error "无法找到 stream 模块"
