@@ -181,14 +181,21 @@ case $cert_choice in
     1)
         print_info "使用 HTTP 验证申请证书..."
         
-        # 检查 80 端口
+        # 检查并停止 nginx（如果正在运行）
+        if systemctl is-active --quiet nginx; then
+            print_info "停止 Nginx 以释放 80 端口..."
+            systemctl stop nginx
+            NGINX_WAS_RUNNING=true
+        else
+            NGINX_WAS_RUNNING=false
+        fi
+        
+        # 再次检查 80 端口
         if netstat -tuln | grep -q ":80 "; then
-            print_warning "80 端口已被占用"
+            print_warning "80 端口仍被占用"
             netstat -tuln | grep ":80 "
-            read -p "是否继续? (y/n): " continue_choice
-            if [ "$continue_choice" != "y" ]; then
-                exit 1
-            fi
+            print_error "请手动停止占用 80 端口的服务"
+            exit 1
         fi
         
         # 输入邮箱
@@ -205,11 +212,10 @@ case $cert_choice in
         # 申请证书
         ~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone --httpport 80 --force
         
-        # 安装证书
+        # 安装证书（不使用 reloadcmd，因为 nginx 还没启动）
         ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
             --key-file $CERT_DIR/$DOMAIN.key \
-            --fullchain-file $CERT_DIR/$DOMAIN.crt \
-            --reloadcmd "systemctl reload nginx"
+            --fullchain-file $CERT_DIR/$DOMAIN.crt
         
         print_success "证书申请成功"
         ;;
@@ -234,8 +240,7 @@ case $cert_choice in
         ~/.acme.sh/acme.sh --renew -d $DOMAIN --yes-I-know-dns-manual-mode-enough-go-ahead-please
         ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
             --key-file $CERT_DIR/$DOMAIN.key \
-            --fullchain-file $CERT_DIR/$DOMAIN.crt \
-            --reloadcmd "systemctl reload nginx"
+            --fullchain-file $CERT_DIR/$DOMAIN.crt
         
         print_success "证书申请成功"
         ;;
@@ -265,6 +270,15 @@ if crontab -l 2>/dev/null | grep -q "acme.sh"; then
 else
     ~/.acme.sh/acme.sh --install-cronjob
     print_success "自动续期任务已安装"
+fi
+
+# 更新证书的 reloadcmd（在 nginx 启动后才能 reload）
+if [ "$cert_choice" = "1" ] || [ "$cert_choice" = "2" ]; then
+    print_info "配置证书续期时的 Nginx 重载命令..."
+    ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
+        --key-file $CERT_DIR/$DOMAIN.key \
+        --fullchain-file $CERT_DIR/$DOMAIN.crt \
+        --reloadcmd "systemctl reload nginx" 2>/dev/null || true
 fi
 
 # ==================== 步骤 6: 生成 Stream 配置 ====================
@@ -562,6 +576,32 @@ elif command -v ufw &> /dev/null; then
     done
     [ "$ENABLE_WEB" = "y" ] && ufw allow 80/tcp && ufw allow 443/tcp >/dev/null 2>&1
     print_success "防火墙规则已添加 (ufw)"
+elif command -v iptables &> /dev/null; then
+    # 使用 iptables
+    print_info "使用 iptables 配置防火墙..."
+    
+    # 备份规则
+    iptables-save > /root/iptables.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
+    
+    # 添加端口范围规则
+    iptables -I INPUT -p tcp --dport $ENTRY_PORT_START:$ENTRY_PORT_END -j ACCEPT 2>/dev/null || true
+    
+    # 添加 HTTP/HTTPS 规则
+    if [ "$ENABLE_WEB" = "y" ]; then
+        iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
+    fi
+    
+    # 保存规则
+    if command -v netfilter-persistent &> /dev/null; then
+        netfilter-persistent save >/dev/null 2>&1
+    elif [ -d /etc/iptables ]; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    elif [ -d /etc/sysconfig ]; then
+        iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
+    fi
+    
+    print_success "防火墙规则已添加 (iptables)"
 else
     print_warning "未检测到防火墙，请手动配置"
 fi
