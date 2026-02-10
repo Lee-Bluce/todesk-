@@ -177,14 +177,59 @@ fi
 # ==================== 步骤 4: 申请 TLS 证书 ====================
 echo ""
 print_info "[步骤 4/8] 申请 TLS 证书..."
-echo "请选择证书申请方式:"
-echo "1) HTTP 验证 (需要 80 端口可用)"
-echo "2) DNS 手动验证"
-echo "3) 跳过证书申请 (已有证书)"
-
-read -p "请选择 [1-3]: " cert_choice
 
 mkdir -p $CERT_DIR
+
+# 检查是否已有证书
+CERT_EXISTS=false
+if [ -f "$CERT_DIR/$DOMAIN.key" ] && [ -f "$CERT_DIR/$DOMAIN.crt" ]; then
+    print_success "检测到已有证书文件"
+    
+    # 检查证书有效期
+    if openssl x509 -in "$CERT_DIR/$DOMAIN.crt" -noout -checkend 2592000 2>/dev/null; then
+        # 证书还有30天以上有效期
+        CERT_VALID_DAYS=$(( ($(date -d "$(openssl x509 -in "$CERT_DIR/$DOMAIN.crt" -noout -enddate | cut -d= -f2)" +%s) - $(date +%s)) / 86400 ))
+        print_success "证书有效，剩余 $CERT_VALID_DAYS 天"
+        CERT_EXISTS=true
+    else
+        print_warning "证书即将过期或已过期"
+    fi
+elif [ -d ~/.acme.sh/${DOMAIN}_ecc ] && [ -f ~/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key ]; then
+    # 从 acme.sh 目录复制证书
+    print_info "从 acme.sh 目录复制证书..."
+    cp ~/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key $CERT_DIR/$DOMAIN.key
+    cp ~/.acme.sh/${DOMAIN}_ecc/fullchain.cer $CERT_DIR/$DOMAIN.crt
+    
+    if [ -f "$CERT_DIR/$DOMAIN.crt" ]; then
+        CERT_VALID_DAYS=$(( ($(date -d "$(openssl x509 -in "$CERT_DIR/$DOMAIN.crt" -noout -enddate | cut -d= -f2)" +%s) - $(date +%s)) / 86400 ))
+        print_success "证书已复制，剩余 $CERT_VALID_DAYS 天"
+        CERT_EXISTS=true
+    fi
+fi
+
+if [ "$CERT_EXISTS" = true ]; then
+    echo ""
+    read -p "是否使用现有证书? (y/n) [y]: " use_existing
+    use_existing=${use_existing:-y}
+    
+    if [ "$use_existing" = "y" ]; then
+        print_success "使用现有证书"
+        cert_choice="3"
+    else
+        echo ""
+        echo "请选择证书申请方式:"
+        echo "1) HTTP 验证 (需要 80 端口可用)"
+        echo "2) DNS 手动验证"
+        echo "3) 跳过证书申请 (已有证书)"
+        read -p "请选择 [1-3]: " cert_choice
+    fi
+else
+    echo "请选择证书申请方式:"
+    echo "1) HTTP 验证 (需要 80 端口可用)"
+    echo "2) DNS 手动验证"
+    echo "3) 跳过证书申请 (已有证书)"
+    read -p "请选择 [1-3]: " cert_choice
+fi
 
 case $cert_choice in
     1)
@@ -219,14 +264,37 @@ case $cert_choice in
         ~/.acme.sh/acme.sh --register-account -m $email
         
         # 申请证书
-        ~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone --httpport 80 --force
-        
-        # 安装证书（不使用 reloadcmd，因为 nginx 还没启动）
-        ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
-            --key-file $CERT_DIR/$DOMAIN.key \
-            --fullchain-file $CERT_DIR/$DOMAIN.crt
-        
-        print_success "证书申请成功"
+        if ~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone --httpport 80 --force; then
+            # 安装证书（不使用 reloadcmd，因为 nginx 还没启动）
+            ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
+                --key-file $CERT_DIR/$DOMAIN.key \
+                --fullchain-file $CERT_DIR/$DOMAIN.crt
+            
+            print_success "证书申请成功"
+        else
+            print_error "证书申请失败"
+            print_warning "可能原因："
+            print_warning "1. 达到 Let's Encrypt 速率限制（每周最多5次）"
+            print_warning "2. DNS 解析未生效"
+            print_warning "3. 80 端口无法访问"
+            echo ""
+            
+            # 检查是否有旧证书可用
+            if [ -d ~/.acme.sh/${DOMAIN}_ecc ] && [ -f ~/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key ]; then
+                print_info "尝试使用之前申请的证书..."
+                cp ~/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key $CERT_DIR/$DOMAIN.key
+                cp ~/.acme.sh/${DOMAIN}_ecc/fullchain.cer $CERT_DIR/$DOMAIN.crt
+                
+                if [ -f "$CERT_DIR/$DOMAIN.crt" ]; then
+                    print_success "已使用之前的证书"
+                else
+                    print_error "无法找到可用证书"
+                    exit 1
+                fi
+            else
+                exit 1
+            fi
+        fi
         ;;
     2)
         print_info "使用 DNS 手动验证..."
