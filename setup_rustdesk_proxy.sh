@@ -156,6 +156,12 @@ if [ -n "$STREAM_MODULE" ]; then
     # 检查模块是否已通过 modules-enabled 加载
     if [ -f /etc/nginx/modules-enabled/50-mod-stream.conf ]; then
         print_info "Stream 模块已通过 modules-enabled 加载"
+        
+        # 清理 nginx.conf 中可能存在的重复加载
+        if grep -q "^load_module.*ngx_stream_module" /etc/nginx/nginx.conf; then
+            print_info "清理 nginx.conf 中的重复模块加载..."
+            sed -i '/^load_module.*ngx_stream_module/d' /etc/nginx/nginx.conf
+        fi
     elif grep -q "load_module.*stream" /etc/nginx/nginx.conf; then
         print_info "Stream 模块已在 nginx.conf 中加载"
     else
